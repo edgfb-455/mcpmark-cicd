@@ -78,10 +78,13 @@ jobs:
             const text = `${titleLower}\n${bodyLower}`;
             const hasCritical = ['critical','urgent','production','outage'].some(k=>text.includes(k));
             const hasHigh     = ['important','high','blocking'].some(k=>text.includes(k));
+            const hasMedium   = ['medium','normal'].some(k=>text.includes(k));
             const hasLow      = ['low','nice-to-have','minor'].some(k=>text.includes(k));
+            // Highest priority wins: critical > high > medium > low
             let priority = 'priority-medium';
             if (hasCritical) priority = 'priority-critical';
             else if (hasHigh) priority = 'priority-high';
+            else if (hasMedium) priority = 'priority-medium';
             else if (hasLow) priority = 'priority-low';
             if (!current.has(priority)) labelsToAdd.push(priority);
 
