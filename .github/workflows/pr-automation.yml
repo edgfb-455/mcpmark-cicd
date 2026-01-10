@@ -1,0 +1,242 @@
+name: PR Automation Workflow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run ESLint checks
+        id: eslint
+        run: |
+          if npm run lint; then
+            echo "::set-output name=result::✅ No ESLint errors found"
+          else
+            echo "::set-output name=result::❌ ESLint errors detected in code"
+          fi
+      
+      - name: Run Prettier formatting checks
+        id: prettier
+        run: |
+          if npx prettier --check .; then
+            echo "::set-output name=result::✅ No Prettier formatting issues"
+          else
+            echo "::set-output name=result::❌ Prettier formatting issues found"
+          fi
+      
+      - name: Post Code Quality Report comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { context } = require('@actions/github');
+            const commentBody = `## Code Quality Report
+            ### ESLint Status: ${steps.eslint.outputs.result}
+            ### Prettier Status: ${steps.prettier.outputs.result}`;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run test suite with coverage
+        id: tests
+        run: |
+          if npm test -- --coverage; then
+            echo "::set-output name=result::✅ All tests passed"
+          else
+            echo "::set-output name=result::❌ Some tests failed"
+          fi
+      
+      - name: Generate coverage summary
+        run: npx nyc report --reporter=text-summary > coverage-summary.txt || echo "❌ Coverage summary generation failed"
+      
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+      
+      - name: Post Test Coverage Report comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { context } = require('@actions/github');
+            const fs = require('fs');
+            
+            let coverageSummary = "❌ No coverage summary available";
+            if (fs.existsSync('coverage-summary.txt')) {
+              coverageSummary = fs.readFileSync('coverage-summary.txt', 'utf8');
+            }
+            
+            const commentBody = `## Test Coverage Report
+            ### Test Execution Status: ${steps.tests.outputs.result}
+            ### Coverage Summary:
+            \`\`\`
+            ${coverageSummary}
+            \`\`\``;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            });
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run dependency vulnerability check (npm audit)
+        id: npm-audit
+        run: |
+          if npm audit --json > npm-audit.json; then
+            const auditData = JSON.parse(fs.readFileSync('npm-audit.json', 'utf8'));
+            if (auditData.vulnerabilities.length === 0) {
+              echo "::set-output name=result::✅ No vulnerabilities found in dependencies"
+            } else {
+              echo "::set-output name=result::❌ Vulnerabilities detected in dependencies"
+            }
+          else
+            echo "::set-output name=result::❌ npm audit failed to run"
+          fi
+      
+      - name: Scan for secrets in code
+        id: secret-scan
+        run: |
+          if npx gitleaks detect -s . -r gitleaks-report.json; then
+            echo "::set-output name=result::✅ No secrets detected in code changes"
+          else
+            echo "::set-output name=result::❌ Potential secrets detected in code changes"
+          fi
+      
+      - name: Post Security Scan Report comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { context } = require('@actions/github');
+            
+            const commentBody = `## Security Scan Report
+            ### Dependencies Vulnerability Status: ${steps['npm-audit'].outputs.result}
+            ### Secrets Scan Status: ${steps['secret-scan'].outputs.result}`;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build application
+        id: build
+        run: |
+          if npm run build; then
+            echo "::set-output name=result::✅ Application built successfully"
+          else
+            echo "::set-output name=result::❌ Application build failed"
+          fi
+      
+      - name: Validate application endpoints
+        id: endpoints
+        run: |
+          # Start application in background
+          npm start &
+          APP_PID=$!
+          
+          # Wait for server to start
+          sleep 5
+          
+          # Check default endpoint (adjust port/path as needed for your project)
+          if curl -s --fail http://localhost:3000/; then
+            echo "::set-output name=result::✅ Main endpoint accessible"
+          else
+            echo "::set-output name=result::❌ Main endpoint inaccessible"
+          fi
+          
+          # Clean up running process
+          kill $APP_PID
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-deployment-preview
+          path: dist/
+          retention-days: 7
+      
+      - name: Post Build Validation comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { context } = require('@actions/github');
+            
+            const commentBody = `## Build Validation
+            ### Build Status: ${steps.build.outputs.result}
+            ### Endpoint Validation Status: ${steps.endpoints.outputs.result}`;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            });
